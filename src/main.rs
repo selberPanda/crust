@@ -1,6 +1,6 @@
+use serde::Deserialize;
+use std::io::{self, Write};
 use std::{env, path::Path, process::Command};
-
-use regex::Regex;
 
 fn change_dir(target: &str) {
     let new_dir = Path::new(&target);
@@ -10,57 +10,127 @@ fn change_dir(target: &str) {
     }
 }
 
-fn main() {
+#[derive(Debug, Deserialize, Clone)]
+struct Package {
+    #[serde(rename = "Description")]
+    description: Option<String>,
+    #[serde(rename = "Name")]
+    name: Option<String>,
+    #[serde(rename = "Version")]
+    version: Option<String>,
+}
+
+#[derive(Debug, Deserialize)]
+struct ApiResponse {
+    results: Vec<Package>,
+}
+
+async fn get_pkglist(url: &str) -> Result<ApiResponse, reqwest::Error> {
+    let json = reqwest::get(url).await?.json::<ApiResponse>().await?;
+    Ok(json)
+}
+
+#[tokio::main]
+async fn main() {
     let args: Vec<String> = env::args().collect();
 
     println!("Alle Argumente: {:?}", args);
 
     if args.len() > 2 {
         let command = &args[1];
-        let pkg = &args[2];
+        let paket = &args[2];
 
         match command.as_str() {
             "install" => {
-                let re =
-                    Regex::new(r"^https://aur\.archlinux\.org/([a-zA-Z0-9._+-]+)\.git$").unwrap();
-                if let Some(caps) = re.captures(pkg) {
-                    let pkgname = &caps[1];
-                    let target_dir = format!("repos/{}", pkgname);
+                let url = format!("https://aur.archlinux.org/rpc/v5/search/{}", paket);
 
-                    if Path::new(&target_dir).exists() {
-                        eprintln!("Paket {} ist schon geklont!", pkgname);
-                        return;
-                    }
+                let pkglist = get_pkglist(&url).await.unwrap();
+                let pkgs = pkglist.results;
 
-                    println!("Klonen von {} nach {}", pkg, target_dir);
+                for (i, pkg) in pkgs.iter().rev().enumerate() {
+                    println!(
+                        "{}  {} {}\n{}\n",
+                        pkgs.len() - i,
+                        pkg.name.as_deref().unwrap_or("N/A"),
+                        pkg.version.as_deref().unwrap_or("Keine Version gegeben"),
+                        pkg.description.as_deref().unwrap_or("Keine Beschreibung")
+                    );
+                }
 
-                    let status = Command::new("git")
-                        .args(["clone", pkg, &target_dir])
-                        .status()
-                        .expect("Fehler beim Ausführen von git");
+                let mut pkg_input = String::new();
+                println!("Wähle zu installierendes Paket aus [1],[2],... : ");
+                io::stdin().read_line(&mut pkg_input).unwrap();
 
-                    if status.success() {
-                        println!("{} erfolgreich geklont!", pkgname);
+                let mut pkgname = String::new();
 
-                        change_dir(&target_dir);
+                if let Ok(num) = pkg_input.trim().parse::<usize>() {
+                    if num > 0 && num <= pkgs.len() {
+                        let pkg = &pkgs[num - 1];
+                        pkgname = pkg.name.clone().unwrap_or("N/A".to_string());
 
-                        let status = Command::new("makepkg")
-                            .arg("-si")
-                            .status()
-                            .expect("Fehler beim ausführen von makepkg");
-
-                        if status.success() {
-                            println!("{} erfolgreich gebaut!", pkgname)
-                        } else {
-                            eprintln!("makepkg für {} fehlgeschlagen", pkgname)
-                        }
+                        println!("Du hast gewählt: {}", pkgname);
                     } else {
-                        eprintln!("git clone für {} fehlgeschlagen!", pkgname);
+                        println!("Ungültige Nummer");
                     }
                 } else {
-                    println!(
-                        "Bitte gib einen gültigen AUR-Link an (z. B. https://aur.archlinux.org/pkgname.git)!"
-                    );
+                    println!("Bitte eine Zahl eingeben!");
+                }
+
+                let home = env::var("HOME").expect("HOME nicht gesetzt");
+                let target_dir = format!("{}/.crust/repos/{}", home, pkgname);
+
+                let installed = Command::new("pacman").args(["-Q", &pkgname]).status();
+
+                match installed {
+                    Ok(status) => {
+                        if status.success() {
+                            print!("{} ist schon Installiert. Fortfahren? [j/N] ", pkgname);
+                            io::stdout().flush().unwrap();
+
+                            let mut input = String::new();
+                            io::stdin().read_line(&mut input).unwrap();
+                            let input = input.trim();
+
+                            if input.eq_ignore_ascii_case("j") {
+                                println!("Fortfahren...");
+                                let _ = Command::new("rm").args(["-rf", &target_dir]).status();
+                            } else {
+                                println!("Wird abgebrochen");
+                                return;
+                            }
+                        }
+                    }
+                    Err(e) => {
+                        eprintln!("Fehler beim prüfen des Pakets: {}", e)
+                    }
+                }
+
+                println!("Klonen von {} nach {}", pkgname, target_dir);
+
+                let pkg_url = format!("https://aur.archlinux.org/{}.git", pkgname);
+
+                let status = Command::new("git")
+                    .args(["clone", &pkg_url, &target_dir])
+                    .status()
+                    .expect("Fehler beim Ausführen von git");
+
+                if status.success() {
+                    println!("{} erfolgreich geklont!", pkgname);
+
+                    change_dir(&target_dir);
+
+                    let status = Command::new("makepkg")
+                        .arg("-si")
+                        .status()
+                        .expect("Fehler beim ausführen von makepkg");
+
+                    if status.success() {
+                        println!("{} erfolgreich gebaut!", pkgname)
+                    } else {
+                        eprintln!("makepkg für {} fehlgeschlagen", pkgname)
+                    }
+                } else {
+                    eprintln!("git clone für {} fehlgeschlagen!", pkgname);
                 }
             }
             "remove" => {
@@ -75,5 +145,47 @@ fn main() {
         }
     } else {
         println!("Bitte gib ein AUR-Paket als Argument an!");
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[tokio::test]
+    async fn test_pkg_get() {
+        let url = "https://aur.archlinux.org/rpc/v5/search/hello";
+
+        let pkgs = get_pkglist(&url).await.unwrap();
+
+        let packages = pkgs.results;
+
+        for (i, pkg) in packages.iter().rev().enumerate() {
+            println!(
+                "{}  {} {}\n{}\n",
+                packages.len() - i,
+                pkg.name.as_deref().unwrap_or("N/A"),
+                pkg.version.as_deref().unwrap_or("Keine Version gegeben"),
+                pkg.description.as_deref().unwrap_or("Keine Beschreibung")
+            );
+        }
+
+        let mut pkg_input = String::new();
+        println!("Wähle zu installierendes Paket aus [1],[2],... : ");
+        io::stdin().read_line(&mut pkg_input).unwrap();
+
+        if let Ok(num) = pkg_input.trim().parse::<usize>() {
+            if num > 0 && num <= packages.len() {
+                let pkgname = &packages[num - 1];
+                println!(
+                    "Du hast gewählt: {:#?}",
+                    pkgname.name.as_deref().unwrap_or("N/A")
+                );
+            } else {
+                println!("Ungültige Nummer");
+            }
+        } else {
+            println!("Bitte eine Zahl eingeben!");
+        }
     }
 }
