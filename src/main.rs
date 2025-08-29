@@ -36,115 +36,210 @@ async fn main() {
 
     println!("Alle Argumente: {:?}", args);
 
-    if args.len() > 2 {
+    if args.len() > 1 {
         let command = &args[1];
-        let paket = &args[2];
 
         match command.as_str() {
             "install" => {
-                let url = format!("https://aur.archlinux.org/rpc/v5/search/{}", paket);
+                if args.len() > 2 {
+                    let paket = &args[2];
 
-                let pkglist = get_pkglist(&url).await.unwrap();
-                let pkgs = pkglist.results;
+                    let url = format!("https://aur.archlinux.org/rpc/v5/search/{}", paket);
 
-                for (i, pkg) in pkgs.iter().rev().enumerate() {
-                    println!(
-                        "{}  {} {}\n{}\n",
-                        pkgs.len() - i,
-                        pkg.name.as_deref().unwrap_or("N/A"),
-                        pkg.version.as_deref().unwrap_or("Keine Version gegeben"),
-                        pkg.description.as_deref().unwrap_or("Keine Beschreibung")
-                    );
-                }
+                    let pkglist = get_pkglist(&url).await.unwrap();
+                    let pkgs = pkglist.results;
 
-                let mut pkg_input = String::new();
-                println!("Wähle zu installierendes Paket aus [1],[2],... : ");
-                io::stdin().read_line(&mut pkg_input).unwrap();
-
-                let mut pkgname = String::new();
-
-                if let Ok(num) = pkg_input.trim().parse::<usize>() {
-                    if num > 0 && num <= pkgs.len() {
-                        let pkg = &pkgs[num - 1];
-                        pkgname = pkg.name.clone().unwrap_or("N/A".to_string());
-
-                        println!("Du hast gewählt: {}", pkgname);
-                    } else {
-                        println!("Ungültige Nummer");
+                    for (i, pkg) in pkgs.iter().rev().enumerate() {
+                        println!(
+                            "{}  {} {}\n{}\n",
+                            pkgs.len() - i,
+                            pkg.name.as_deref().unwrap_or("N/A"),
+                            pkg.version.as_deref().unwrap_or("Keine Version gegeben"),
+                            pkg.description.as_deref().unwrap_or("Keine Beschreibung")
+                        );
                     }
-                } else {
-                    println!("Bitte eine Zahl eingeben!");
-                }
 
-                let home = env::var("HOME").expect("HOME nicht gesetzt");
-                let target_dir = format!("{}/.crust/repos/{}", home, pkgname);
+                    let mut pkg_input = String::new();
+                    println!("Wähle zu installierendes Paket aus [1],[2],... : ");
+                    io::stdin().read_line(&mut pkg_input).unwrap();
 
-                let installed = Command::new("pacman").args(["-Q", &pkgname]).status();
+                    let mut pkgname = String::new();
 
-                match installed {
-                    Ok(status) => {
-                        if status.success() {
-                            print!("{} ist schon Installiert. Fortfahren? [j/N] ", pkgname);
-                            io::stdout().flush().unwrap();
+                    if let Ok(num) = pkg_input.trim().parse::<usize>() {
+                        if num > 0 && num <= pkgs.len() {
+                            let pkg = &pkgs[num - 1];
+                            pkgname = pkg.name.clone().unwrap_or("N/A".to_string());
 
-                            let mut input = String::new();
-                            io::stdin().read_line(&mut input).unwrap();
-                            let input = input.trim();
+                            println!("Du hast gewählt: {}", pkgname);
+                        } else {
+                            println!("Ungültige Nummer");
+                        }
+                    } else {
+                        println!("Bitte eine Zahl eingeben!");
+                    }
 
-                            if input.eq_ignore_ascii_case("j") {
-                                println!("Fortfahren...");
-                                let _ = Command::new("rm").args(["-rf", &target_dir]).status();
-                            } else {
-                                println!("Wird abgebrochen");
-                                return;
+                    let home = env::var("HOME").expect("HOME nicht gesetzt");
+                    let target_dir = format!("{}/.crust/repos/{}", home, pkgname);
+
+                    let installed = Command::new("pacman").args(["-Q", &pkgname]).status();
+
+                    match installed {
+                        Ok(status) => {
+                            if status.success() {
+                                print!("{} ist schon Installiert. Fortfahren? [j/N] ", pkgname);
+                                io::stdout().flush().unwrap();
+
+                                let mut input = String::new();
+                                io::stdin().read_line(&mut input).unwrap();
+                                let input = input.trim();
+
+                                if input.eq_ignore_ascii_case("j") {
+                                    println!("Fortfahren...");
+                                    let _ = Command::new("rm").args(["-rf", &target_dir]).status();
+                                } else {
+                                    println!("Wird abgebrochen");
+                                    return;
+                                }
                             }
                         }
+                        Err(e) => {
+                            eprintln!("Fehler beim prüfen des Pakets: {}", e)
+                        }
                     }
-                    Err(e) => {
-                        eprintln!("Fehler beim prüfen des Pakets: {}", e)
-                    }
-                }
 
-                println!("Klonen von {} nach {}", pkgname, target_dir);
+                    println!("Klonen von {} nach {}", pkgname, target_dir);
 
-                let pkg_url = format!("https://aur.archlinux.org/{}.git", pkgname);
+                    let pkg_url = format!("https://aur.archlinux.org/{}.git", pkgname);
 
-                let status = Command::new("git")
-                    .args(["clone", &pkg_url, &target_dir])
-                    .status()
-                    .expect("Fehler beim Ausführen von git");
-
-                if status.success() {
-                    println!("{} erfolgreich geklont!", pkgname);
-
-                    change_dir(&target_dir);
-
-                    let status = Command::new("makepkg")
-                        .arg("-si")
+                    let clone = Command::new("git")
+                        .args(["clone", &pkg_url, &target_dir])
                         .status()
-                        .expect("Fehler beim ausführen von makepkg");
+                        .expect("Fehler beim Ausführen von git");
 
-                    if status.success() {
-                        println!("{} erfolgreich gebaut!", pkgname)
+                    if clone.success() {
+                        println!("{} erfolgreich geklont!", pkgname);
+
+                        change_dir(&target_dir);
+
+                        let makepkg = Command::new("makepkg")
+                            .arg("-si")
+                            .status()
+                            .expect("Fehler beim ausführen von makepkg");
+
+                        if makepkg.success() {
+                            println!("{} erfolgreich gebaut!", pkgname)
+                        } else {
+                            eprintln!("makepkg für {} fehlgeschlagen", pkgname)
+                        }
                     } else {
-                        eprintln!("makepkg für {} fehlgeschlagen", pkgname)
+                        eprintln!("git clone für {} fehlgeschlagen!", pkgname);
                     }
                 } else {
-                    eprintln!("git clone für {} fehlgeschlagen!", pkgname);
+                    println!("Bitte gib einen Paktenamen an!")
                 }
             }
             "remove" => {
-                return;
+                if args.len() > 2 {
+                    let paket = &args[2];
+                    let pacman = Command::new("sudo")
+                        .args(["pacman", "-R", paket])
+                        .status()
+                        .expect("Fehler beim deinstallieren");
+
+                    let home = env::var("HOME").expect("HOME nicht gesetzt");
+                    let target_dir = format!("{}/.crust/repos/{}", home, paket);
+
+                    if pacman.success() {
+                        let remove = Command::new("rm")
+                            .args(["-rf", &target_dir])
+                            .status()
+                            .expect("Fehler beim Löschen der Build-Dateien");
+
+                        if remove.success() {
+                            println!("{} erfolgreich entfernt!", target_dir)
+                        }
+                    }
+                }
+            }
+            "update" => {
+                let output = Command::new("pacman")
+                    .arg("-Qm")
+                    .output()
+                    .expect("Fehler beim Auführen von pacman");
+
+                let stdout = String::from_utf8_lossy(&output.stdout);
+
+                let packages: Vec<String> = stdout
+                    .lines()
+                    .map(|line| line.split_whitespace().next().unwrap().to_string())
+                    .collect();
+
+                for pkg in &packages {
+                    let home = env::var("HOME").expect("HOME nicht gesetzt");
+                    let target_dir = format!("{}/.crust/repos/{}", home, pkg);
+
+                    if !Path::new(&target_dir).exists() {
+                        let pkg_url = format!("https://aur.archlinux.org/{}.git", pkg);
+
+                        let _clone = Command::new("git")
+                            .args(["clone", &pkg_url, &target_dir])
+                            .status()
+                            .expect("{} konnte nicht geklont werden!");
+                    }
+
+                    change_dir(&target_dir);
+                    let old_output = Command::new("git")
+                        .args(["rev-parse", "HEAD"])
+                        .output()
+                        .expect("git rev-parse fehlgeschlagen!");
+                    let old_hash = String::from_utf8(old_output.stdout)
+                        .unwrap()
+                        .trim()
+                        .to_string();
+
+                    let pull_status = Command::new("git")
+                        .arg("pull")
+                        .status()
+                        .expect("git pull fehlgeschlagen!");
+                    if !pull_status.success() {
+                        eprintln!("git pull fehlgeschlagen bei {}", pkg);
+                        continue;
+                    }
+
+                    let new_output = Command::new("git")
+                        .args(["rev-parse", "HEAD"])
+                        .output()
+                        .expect("git rev-parse fehlgeschlagen!");
+                    let new_hash = String::from_utf8(new_output.stdout)
+                        .unwrap()
+                        .trim()
+                        .to_string();
+
+                    if old_hash != new_hash {
+                        let makepkg = Command::new("makepkg")
+                            .arg("-si")
+                            .status()
+                            .expect("Fehler beim ausführen von makepkg");
+
+                        if makepkg.success() {
+                            println!("{} erfolgreich gebaut!", pkg)
+                        } else {
+                            eprintln!("makepkg für {} fehlgeschlagen", pkg)
+                        }
+                    }
+                }
+
+                let _pacman = Command::new("sudo").args(["pacman", "-Syu"]).status();
             }
             _ => {
                 eprintln!(
-                    "Unbekannter Befehl: {}. Benutze install oder remove",
+                    "Unbekannter Befehl: {}. Benutze install, remove oder update",
                     command
                 )
             }
         }
     } else {
-        println!("Bitte gib ein AUR-Paket als Argument an!");
+        println!("Befehl zu ungenau!");
     }
 }
 
@@ -152,40 +247,22 @@ async fn main() {
 mod tests {
     use super::*;
 
-    #[tokio::test]
-    async fn test_pkg_get() {
-        let url = "https://aur.archlinux.org/rpc/v5/search/hello";
+    #[test]
+    fn test() {
+        let output = Command::new("pacman")
+            .arg("-Qm")
+            .output()
+            .expect("Fehler beim Auführen von pacman");
 
-        let pkgs = get_pkglist(&url).await.unwrap();
+        let stdout = String::from_utf8_lossy(&output.stdout);
 
-        let packages = pkgs.results;
+        let packages: Vec<String> = stdout
+            .lines()
+            .map(|line| line.split_whitespace().next().unwrap().to_string())
+            .collect();
 
-        for (i, pkg) in packages.iter().rev().enumerate() {
-            println!(
-                "{}  {} {}\n{}\n",
-                packages.len() - i,
-                pkg.name.as_deref().unwrap_or("N/A"),
-                pkg.version.as_deref().unwrap_or("Keine Version gegeben"),
-                pkg.description.as_deref().unwrap_or("Keine Beschreibung")
-            );
-        }
-
-        let mut pkg_input = String::new();
-        println!("Wähle zu installierendes Paket aus [1],[2],... : ");
-        io::stdin().read_line(&mut pkg_input).unwrap();
-
-        if let Ok(num) = pkg_input.trim().parse::<usize>() {
-            if num > 0 && num <= packages.len() {
-                let pkgname = &packages[num - 1];
-                println!(
-                    "Du hast gewählt: {:#?}",
-                    pkgname.name.as_deref().unwrap_or("N/A")
-                );
-            } else {
-                println!("Ungültige Nummer");
-            }
-        } else {
-            println!("Bitte eine Zahl eingeben!");
+        for pkg in &packages {
+            println!("{}", pkg)
         }
     }
 }
