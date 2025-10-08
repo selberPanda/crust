@@ -1,110 +1,99 @@
 mod aur;
+mod cmd;
 mod pkg;
 mod utils;
 
+use crate::cmd::{App, SubCommand};
 use crate::pkg::{build_pkg, check_installed, clone_pkg, pull_pkg, remove_build_dir};
 use crate::{aur::get_pkglist, utils::change_dir, utils::repo_dir};
+use clap::Parser;
 use std::io::{self, Write};
 use std::path::Path;
-use std::{env, process::Command};
+use std::process::Command;
 
 #[tokio::main]
 async fn main() {
-    let args: Vec<String> = env::args().collect();
-    if args.len() < 1 {
-        eprintln!("Befehl zu ungenau!");
-        return;
-    }
+    let app = App::parse();
 
-    match args[1].as_str() {
-        "install" => install_pkg(args.get(2)).await,
-        "remove" => remove_pkg(args.get(2)),
-        "update" => update_pkg(),
-        _ => eprintln!("Unbekannter Befehl. Benutze install, remove oder update"),
+    match app.subcommand {
+        SubCommand::Install { pkgname } => install_pkg(pkgname).await,
+        SubCommand::Remove { pkgname } => remove_pkg(pkgname),
+        SubCommand::Update {} => update_pkg(),
     }
 }
 
-async fn install_pkg(pkgname: Option<&String>) {
-    let pkgname = match pkgname {
-        Some(pkgname) => pkgname,
-        None => {
-            eprintln!("Bitte gib einen Paketnamen an!");
-            return;
+async fn install_pkg(pkgname: Vec<String>) {
+    for (_i, pkgname) in pkgname.iter().enumerate() {
+        let url = format!("https://aur.archlinux.org/rpc/v5/search/{}", pkgname);
+        let pkglist = get_pkglist(&url).await.unwrap();
+        let pkglist = pkglist.results;
+
+        for (i, pkg) in pkglist.iter().rev().enumerate() {
+            println!(
+                "{}  {} {}\n{}\n",
+                pkglist.len() - i,
+                pkg.name.as_deref().unwrap_or("N/A"),
+                pkg.version.as_deref().unwrap_or("N/A"),
+                pkg.description.as_deref().unwrap_or("Keine Beschreibung")
+            );
         }
-    };
 
-    let url = format!("https://aur.archlinux.org/rpc/v5/search/{}", pkgname);
-    let pkglist = get_pkglist(&url).await.unwrap();
-    let pkglist = pkglist.results;
+        let mut pkg_input = String::new();
+        println!("Wähle zu installierendes Paket aus [1],[2],... : ");
+        io::stdin().read_line(&mut pkg_input).unwrap();
 
-    for (i, pkg) in pkglist.iter().rev().enumerate() {
-        println!(
-            "{}  {} {}\n{}\n",
-            pkglist.len() - i,
-            pkg.name.as_deref().unwrap_or("N/A"),
-            pkg.version.as_deref().unwrap_or("N/A"),
-            pkg.description.as_deref().unwrap_or("Keine Beschreibung")
-        );
-    }
+        let mut pkgname = String::new();
 
-    let mut pkg_input = String::new();
-    println!("Wähle zu installierendes Paket aus [1],[2],... : ");
-    io::stdin().read_line(&mut pkg_input).unwrap();
+        if let Ok(num) = pkg_input.trim().parse::<usize>() {
+            if num > 0 && num <= pkglist.len() {
+                let pkg = &pkglist[num - 1];
+                pkgname = pkg.name.clone().unwrap_or("N/A".to_string());
 
-    let mut pkgname = String::new();
-
-    if let Ok(num) = pkg_input.trim().parse::<usize>() {
-        if num > 0 && num <= pkglist.len() {
-            let pkg = &pkglist[num - 1];
-            pkgname = pkg.name.clone().unwrap_or("N/A".to_string());
-
-            println!("Du hast gewählt: {}", pkgname)
+                println!("Du hast gewählt: {}", pkgname)
+            } else {
+                eprintln!("Ungültige Nummer!");
+            }
         } else {
-            eprintln!("Ungültige Nummer!");
+            eprintln!("Bitte eine Zahl eingeben!")
         }
-    } else {
-        eprintln!("Bitte eine Zahl eingeben!")
-    }
 
-    if check_installed(&pkgname) {
-        print!("{} is schon installiert. Fortfahren? [j/N] ", pkgname);
-        io::stdout().flush().unwrap();
+        if check_installed(&pkgname) {
+            print!("{} is schon installiert. Fortfahren? [j/N] ", pkgname);
+            io::stdout().flush().unwrap();
 
-        let mut input = String::new();
-        io::stdin().read_line(&mut input).unwrap();
-        let input = input.trim();
+            let mut input = String::new();
+            io::stdin().read_line(&mut input).unwrap();
+            let input = input.trim();
 
-        if input.eq_ignore_ascii_case("j") {
-            println!("Fortfahren...");
-            remove_build_dir(&pkgname);
-        } else {
-            println!("Wird abgebrochen!");
-            return;
+            if input.eq_ignore_ascii_case("j") {
+                println!("Fortfahren...");
+                remove_build_dir(&pkgname);
+            } else {
+                println!("Wird abgebrochen!");
+                return;
+            }
         }
-    }
 
-    clone_pkg(&pkgname);
-    change_dir(&repo_dir(&pkgname));
-    build_pkg();
+        clone_pkg(&pkgname);
+        change_dir(&repo_dir(&pkgname));
+        build_pkg();
+    }
 }
 
-fn remove_pkg(pkgname: Option<&String>) {
-    let pkgname = match pkgname {
-        Some(pkgname) => pkgname,
-        None => {
-            eprintln!("Bitte gib einen Paketnamen an!");
-            return;
-        }
-    };
+fn remove_pkg(pkgname: Vec<String>) {
+    let mut list = vec!["pacman", "-R"];
+    list.extend(pkgname.iter().map(|s| s.as_str()));
 
     let pacman = Command::new("sudo")
-        .args(["pacman", "-R", pkgname])
+        .args(list)
         .status()
         .expect("Fehler beim deinstallieren!");
 
     if pacman.success() {
-        if remove_build_dir(pkgname) {
-            println!("{} erfolgreich entfernt!", repo_dir(pkgname))
+        for pkgname in pkgname.iter() {
+            if remove_build_dir(pkgname) {
+                println!("{} erfolgreich entfernt!", repo_dir(pkgname))
+            }
         }
     }
 }
